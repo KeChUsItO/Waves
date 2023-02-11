@@ -7,11 +7,13 @@ from pydub.utils import mediainfo
 import os
 import matplotlib.pyplot as plt
 from time import perf_counter
+import scipy
+
 pd.set_option('display.max_rows', 10)
 pd.set_option('display.max_columns', 10)
 pd.options.plotting.backend = "plotly"
 
-FILE_NAME = "La Jumpa"
+FILE_NAME = "Bad Bunny - Un Coco (360° Visualizer) _ Un Verano Sin Ti (128 kbps)"
 
 
 def normal_round(num, n_digits=0):
@@ -45,9 +47,9 @@ def read(f, format='mp3', normalized=False):
 
 
 def write(f, sr, x, br=1411, normalized=False):
-    """numpy array to MP3"""
+    print("WRITING", x.shape)
     channels = 2 if (x.ndim == 2 and x.shape[1] == 2) else 1
-    if normalized:  # normalized array - each item should be a float in [-1, 1)
+    if normalized:
         y = np.int16(x * 2 ** 15)
     else:
         y = np.int16(x)
@@ -72,8 +74,10 @@ def downsample(audio, sr_in, sr_out=44_100):
     return sr_out, audio
 
 
-sr, br, x = read(f"{FILE_NAME}.wav")
-
+sr, br, x = read(f"{FILE_NAME}.mp3", 'mp3')
+print(x.shape)
+plt.plot(x)
+plt.show()
 yf = fft(np.array(x[0]))
 xf = fftfreq(len(x[0]), 1 / sr)[:len(x[0]) // 2]
 '''
@@ -98,19 +102,17 @@ hashes = [hash_license]
 print(hashes)
 
 
-def encode(wave, sr, br, hashes, file_name, show_plot = False, write = True):
+def encode(wave, sr, br, hashes, file_name, show_plot=False, do_write=True):
     frec = 20_002
     leng = len(wave)
     wave_lin = np.linspace(0.0, leng * 1 / sr, leng, endpoint=False)
     old_max = wave.max()
     amp = np.array(wave).max() // 5_000
-
     if wave.shape[1] == 2:
-        wave[0] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
-        wave[1] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
+        wave += np.tile(amp * np.sin(frec * 2.0 * np.pi * wave_lin),(2,1)).transpose()
+        #wave[1] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
     else:
         wave += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
-    cuant = 1
     for hash in hashes:
         for car in hash:
             if car != ' ':
@@ -122,9 +124,7 @@ def encode(wave, sr, br, hashes, file_name, show_plot = False, write = True):
                 wave[1] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
             else:
                 wave += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
-            cuant += 1
         frec += 18
-    print(cuant)
     wave = wave / wave.max() * 32767
     if show_plot:
         yf = fft(np.array(wave[0]))
@@ -132,12 +132,106 @@ def encode(wave, sr, br, hashes, file_name, show_plot = False, write = True):
         plt.plot(xf, 2.0 / len(x) * np.abs(yf)[0:len(x) // 2])
         plt.grid()
         plt.show()
-    if write:
+    if do_write:
         write(f"{file_name}_encoded.flac", sr, wave, 320)
     return wave
 
 
-def decode(file_name, wave=None, show_plot = False):
+def encode_2(wave, sr, br, hashes, file_name, show_plot=False, do_write=True):
+    frec = 20_002
+    leng = len(wave)
+
+    amp = np.array(wave).max() // 50
+
+    if wave.shape[1] == 2:
+        xf = fftfreq(len(wave[0]), 1 / sr)
+
+        yf_o = fft(np.array(wave[0]))
+        yf_1 = fft(np.array(wave[1]))
+        t_beg = perf_counter()
+        amp = yf_o.real.max() // 1_500
+        diff_array = np.absolute(xf - frec)
+        frec_index = diff_array.argmin()
+        diff_array = np.absolute(xf + frec)
+        frec_index_down = diff_array.argmin()
+        o_indexes = np.where(np.logical_or(xf < -20_000, xf > 20_000))
+        yf_o[o_indexes] = 0
+        yf_1[o_indexes] = 0
+        yf_o[frec_index] = amp + 1j * amp
+        yf_1[frec_index] = amp + 1j * amp
+        yf_o[frec_index_down] = amp + 1j * amp
+        yf_1[frec_index_down] = amp + 1j * amp
+    else:
+        xf = fftfreq(len(wave), 1 / sr)
+        diff_array = np.absolute(xf - frec)
+        frec_index = diff_array.argmin()
+        diff_array = np.absolute(xf + frec)
+        frec_index_down = diff_array.argmin()
+        yf = fft(np.array(wave))
+        amp = yf.real.max() // 1_500
+        o_indexes = np.where(np.logical_or(xf < -20_000, xf > 20_000))
+        yf[o_indexes] = 0
+        yf[frec_index] = amp + 1j * amp
+        yf[frec_index_down] = amp + 1j * amp
+
+    for hash in hashes:
+        for car in hash:
+            if car != ' ':
+                frec += (int(car, 16) + 1)
+            else:
+                frec += 17
+            diff_array = np.absolute(xf - frec)
+            frec_index = diff_array.argmin()
+            diff_array = np.absolute(xf + frec)
+            frec_index_down = diff_array.argmin()
+            if np.array(wave).shape[1] == 2:
+                yf_o[frec_index] = amp + 1j * amp
+                yf_1[frec_index] = amp + 1j * amp
+                yf_o[frec_index_down] = amp + 1j * amp
+                yf_1[frec_index_down] = amp + 1j * amp
+            else:
+                yf[frec_index] = amp + 1j * amp
+                yf[frec_index_down] = amp + 1j * amp
+        frec += 18
+    if wave.shape[1] != 2:
+        wave = scipy.fft.ifft(yf)
+    else:
+        wave = pd.DataFrame()
+        wave[0] = scipy.fft.ifft(yf_o).real
+        wave[1] = scipy.fft.ifft(yf_1).real
+        #plt.plot(np.array([scipy.fft.ifft(fft(np.array(wave[0]))), scipy.fft.ifft(fft(np.array(wave[1])))]))
+        #plt.show()
+    wave = wave / wave.max() * 32767
+    t_end = perf_counter()
+    print('Time:', t_end - t_beg)
+    if show_plot:
+        plt.plot(wave)
+        plt.show()
+        try:
+            plt.plot(xf, 2.0 / len(xf) * np.abs(yf))
+            plt.grid()
+            plt.show()
+        except:
+            plt.plot(xf, 2.0 / len(xf) * np.abs(yf_o))
+            plt.grid()
+            plt.show()
+    if do_write:
+        write(f"{file_name}_encoded.flac", sr, wave, 320)
+
+    return wave
+
+
+print(x.shape)
+t_beg = perf_counter()
+encode(x, sr, br, [hash_license], FILE_NAME, show_plot=False, do_write=True)
+t_end = perf_counter()
+print('Time:', t_end-t_beg)
+
+
+encode_2(x, sr, br, [hash_license], FILE_NAME, show_plot=True, do_write=False)
+
+
+def decode(file_name, wave=None, show_plot=False):
     sr, br, x = read(file_name, 'flac')
 
     yf = fft(np.array(x[0]))
@@ -171,7 +265,7 @@ def decode(file_name, wave=None, show_plot = False):
     print(dec_hashes)
 
 
-def real_time_decode_test(file_name, test, wave=None, show_plot = False):
+def real_time_decode_test(file_name, test, wave=None, show_plot=False):
     sr, br, x = read(file_name, 'flac')
     x = np.array(x)
     for i in range(normal_round(sr * 1), len(x[:, 0]), normal_round(sr * 1)):
@@ -206,7 +300,7 @@ def real_time_decode_test(file_name, test, wave=None, show_plot = False):
         dec_hashes.append(string)
 
         if dec_hashes == test:
-            return True, normal_round(leng/sr,2)
+            return True, normal_round(leng / sr, 2)
     return False, np.nan
 
 
@@ -220,7 +314,8 @@ print(hashes)
 def test():
     if not os.path.exists('E:\Encoded Songs\Songs_test_results.csv'):
         results = pd.DataFrame([],
-                               columns=['Song', 'Original File', 'Encoded File','Time To Encode','Hash', 'Decoded', 'Time To Decode'])
+                               columns=['Song', 'Original File', 'Encoded File', 'Time To Encode', 'Hash', 'Decoded',
+                                        'Time To Decode'])
         results.to_csv('E:\Encoded Songs\Songs_test_results.csv')
     try:
         results = pd.read_csv('E:\Encoded Songs\Songs_test_results.csv', index_col=[0])
@@ -253,14 +348,20 @@ def test():
                         t_start = perf_counter()
                         enc_wave = encode(x, sr, br, hashes, f'E:\Encoded Songs\{art}\{alb}\{song[:-5]}')
                         t_stop = perf_counter()
-                        row.append(normal_round(t_stop - t_start,2))
-                        print(normal_round(t_stop - t_start,2))
+                        row.append(normal_round(t_stop - t_start, 2))
+                        print(normal_round(t_stop - t_start, 2))
                         row.append(hash_waves + '//' + hash_license)
-                        decoded, time_to_decode = real_time_decode_test(f'E:\Encoded Songs\{art}\{alb}\{song[:-5]}_encoded.flac', hashes)
+                        decoded, time_to_decode = real_time_decode_test(
+                            f'E:\Encoded Songs\{art}\{alb}\{song[:-5]}_encoded.flac', hashes)
                         row.append(decoded)
                         row.append(time_to_decode)
-                        results = pd.concat([results, pd.DataFrame([row], columns=['Song', 'Original File', 'Encoded File','Time To Encode','Hash', 'Decoded', 'Time To Decode'])], axis=0).reset_index(drop=True)
+                        results = pd.concat([results, pd.DataFrame([row],
+                                                                   columns=['Song', 'Original File', 'Encoded File',
+                                                                            'Time To Encode', 'Hash', 'Decoded',
+                                                                            'Time To Decode'])], axis=0).reset_index(
+                            drop=True)
                         results.to_csv('E:\Encoded Songs\Songs_test_results.csv')
+
 
 def get_time_col():
     prev = "E:\PC antiguo\musica\Bueno"
@@ -269,19 +370,21 @@ def get_time_col():
     for file_i, file in enumerate(results['Original File']):
         print(normal_round(file_i / len(results) * 100, 2), '%')
         sr, br, x = read(file, 'flac')
-        col.append(normal_round(len(x)/sr,2))
+        col.append(normal_round(len(x) / sr, 2))
     results['Song Duration'] = col
     results.to_csv('E:\Encoded Songs\Songs_test_results.csv')
 
 
-
 def csv_analysis():
     results = pd.read_csv('E:\Encoded Songs\Songs_test_results.csv', index_col=[0])
-    print("N:",len(results))
-    print("Time To Decode: ", str(normal_round(results['Time To Decode'].mean(), 2)) + ' +/- ' + str(normal_round(results['Time To Decode'].std(), 2)) )
-    print("Decoded: ", str(normal_round(results['Decoded'].mean(), 2)) + ' +/- ' + str(normal_round(results['Decoded'].std(), 2)))
+    print("N:", len(results))
+    print("Time To Decode: ", str(normal_round(results['Time To Decode'].mean(), 2)) + ' +/- ' + str(
+        normal_round(results['Time To Decode'].std(), 2)))
+    print("Decoded: ",
+          str(normal_round(results['Decoded'].mean(), 2)) + ' +/- ' + str(normal_round(results['Decoded'].std(), 2)))
     times_relation = results['Time To Encode'] / results['Song Duration']
-    print("Encoding Time: ", str(normal_round(times_relation.mean()/2, 2) ) + ' +/- ' + str(normal_round(times_relation.std()/2, 2)))
+    print("Encoding Time: ",
+          str(normal_round(times_relation.mean() / 2, 2)) + ' +/- ' + str(normal_round(times_relation.std() / 2, 2)))
     print("Max Time To Decode: " + str(results['Time To Decode'].max()))
     fig = results['Time To Encode'].plot.hist()
     fig.show()
@@ -291,17 +394,16 @@ def csv_analysis():
     fig.show()
     print("Decoded: " + str(results['Decoded'].min()))
     print(results.describe())
-    print(results[['Song','Time To Encode','Decoded','Time To Decode']].sort_values('Time To Decode',ascending=False))
+    print(
+        results[['Song', 'Time To Encode', 'Decoded', 'Time To Decode']].sort_values('Time To Decode', ascending=False))
 
 
-csv_analysis()
-
-
+'''
 sr, br, x = read(f"E:\Pc antiguo\musica\Bueno\Wisin & Yandel\De Otra Manera/Tarzan.flac", 'flac')
 hash_waves = hashlib.sha256(b"Waves").hexdigest()
 hash_license = hashlib.sha256(("Ibai Twitch Tarzan").encode('utf-8')).hexdigest()
 hashes = [hash_waves, hash_license]
 encode(x, sr, br , hashes,'', write = False, show_plot=True)
 
-
-#real_time_decode_test('E:\Encoded Songs\Wisin & Yandel\De Otra Manera/Tarzan_encoded.flac', hashes, show_plot = True)
+'''
+# real_time_decode_test('E:\Encoded Songs\Wisin & Yandel\De Otra Manera/Tarzan_encoded.flac', hashes, show_plot = True)
