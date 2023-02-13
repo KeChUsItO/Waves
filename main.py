@@ -8,6 +8,9 @@ import os
 import matplotlib.pyplot as plt
 from time import perf_counter
 import scipy
+from functools import wraps
+import time
+from numba import njit
 
 pd.set_option('display.max_rows', 10)
 pd.set_option('display.max_columns', 10)
@@ -70,6 +73,7 @@ def decode(file_name=None, wave=None, sr=None, show_plot=False):
     prev = 20_002
     string = ''
     dec_hashes = []
+
     for char_ind, char in enumerate(np.array(characters).flatten('F')):
         if (normal_round((xf[char] - prev))) != 0:
             if normal_round((xf[char] - prev)) == 17:
@@ -81,8 +85,17 @@ def decode(file_name=None, wave=None, sr=None, show_plot=False):
                 string += f'{(normal_round((xf[char] - prev) - 1)):x}'
             prev = normal_round(xf[char])
     dec_hashes.append(string)
-
     print(dec_hashes)
+
+def fft_plot(wave, sr):
+    print(wave.shape)
+    leng = len(wave)
+    yf = fft(wave[:,0])
+    xf = fftfreq(leng, 1 / sr)[:leng // 2]
+    print(yf.shape, xf.shape)
+    plt.plot(xf, 2.0 / leng * np.abs(yf)[:leng // 2])
+    plt.grid()
+    plt.show()
 def write(f, sr, x, br=1411, normalized=False):
     print("WRITING", x.shape)
     channels = 2 if (x.ndim == 2 and x.shape[1] == 2) else 1
@@ -92,7 +105,6 @@ def write(f, sr, x, br=1411, normalized=False):
         y = np.int16(x)
     song = pydub.AudioSegment(y.tobytes(), frame_rate=sr, sample_width=2, channels=channels)
     song.export(f, format="flac")
-
 
 def downsample(audio, sr_in, sr_out=44_100):
     if sr_in == sr_out:
@@ -121,6 +133,16 @@ plt.grid()
 plt.show()
 '''
 
+def timeit(func):
+    @wraps(func)
+    def timeit_wrapper(*args, **kwargs):
+        start_time = time.perf_counter()
+        result = func(*args, **kwargs)
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        print(f'Function {func.__name__}{args} {kwargs} Took {total_time:.4f} seconds')
+        return result
+    return timeit_wrapper
 
 def fourier_to_audio(xf, amp, leng, sr):
     song_wave = np.array([0] * leng).astype(np.float32)
@@ -137,17 +159,10 @@ hashes = [hash_license]
 print(hashes)
 
 
-def encode(wave, sr, br, hashes, file_name, show_plot=False, do_write=True):
+def encode(wave, sr, hashes, wave_lin):
     frec = 20_002
     leng = len(wave)
-    wave_lin = np.linspace(0.0, leng * 1 / sr, leng, endpoint=False)
-    old_max = wave.max()
-    amp = np.array(wave).max() // 5_000
-    if wave.shape[1] == 2:
-        wave += np.tile(amp * np.sin(frec * 2.0 * np.pi * wave_lin), (2, 1)).transpose()
-        # wave[1] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
-    else:
-        wave += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
+    amp = 1
     for hash in hashes:
         for car in hash:
             if car != ' ':
@@ -155,34 +170,16 @@ def encode(wave, sr, br, hashes, file_name, show_plot=False, do_write=True):
             else:
                 frec += 17
             if wave.shape[1] == 2:
-                wave[0] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
-                wave[1] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
+                wave[:,0] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
+                wave[:,1] += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
             else:
                 wave += amp * np.sin(frec * 2.0 * np.pi * wave_lin)
         frec += 18
     wave = wave / wave.max() * 32767
-    if show_plot:
-        yf = fft(np.array(wave[0]))
-        xf = fftfreq(len(wave[0]), 1 / sr)[:len(wave[0]) // 2]
-        plt.plot(xf, 2.0 / len(x) * np.abs(yf)[0:len(x) // 2])
-        plt.grid()
-        plt.show()
-    if do_write:
-        write(f"{file_name}_encoded.flac", sr, wave, 320)
     return wave
-
-
-def encode_parts(wave, sr, hashes, file_name, time_part, show_plot=False, do_write=True):
-    leng = len(wave)
-    max = wave.max()
-    wave_lin = np.linspace(0.0, leng * 1 / sr, leng, endpoint=False)
-    old_max = wave.max()
-    amp = 1
-    wave_lin_splits = np.array_split(wave_lin, leng / (sr * time_part))
-
+def clean_high_frecs(wave):
     if wave.shape[1] == 2:
         xf = fftfreq(len(wave[0]), 1 / sr)
-
         yf_o = fft(np.array(wave[0]))
         yf_1 = fft(np.array(wave[1]))
         o_indexes = np.where(np.logical_or(xf < -20_000, xf > 20_000))
@@ -195,11 +192,34 @@ def encode_parts(wave, sr, hashes, file_name, time_part, show_plot=False, do_wri
         o_indexes = np.where(np.logical_or(xf < -20_000, xf > 20_000))
         yf[o_indexes] = 0
         wave = scipy.fft.ifft(yf)
+    return wave
 
+wave_x = clean_high_frecs(x)
+beg = perf_counter()
+print("START")
+new_wave = encode(np.array(wave_x), sr, hashes,     np.linspace(0.0, len(wave_x) * 1 / sr, len(wave_x), endpoint=False))
+#write(f"{FILE_NAME}_encoded.flac", sr, new_wave)
+end = perf_counter()
+print(end-beg)
+fft_plot(new_wave, sr)
+def encode_parts(wave, sr, hashes, file_name, time_part, show_plot=False, do_write=True):
+    leng = len(wave)
+    wave_lin = np.arange(0.0, leng * 1 / sr, leng)
+    amp = 1
+    cells = np.floor(leng / (sr * time_part)).astype(np.int64)
+    wave_lin_splits = np.zeros(())
+    wave_split = np.arange(cells)
+    print(cells)
+    print(np.array(np.array_split(np.array(wave), leng / (sr * time_part))).shape)
+    print(np.array(np.array_split(np.array(wave), leng / (sr * time_part)))[0].shape)
+    print(np.array(np.array_split(np.array(wave), leng / (sr * time_part)))[-1].shape)
+    print(wave_lin.shape)
+    for ii in range(cells):
+        wave_lin_splits[ii] = wave_lin[ii*sr:(ii+1)*sr]
+        print(wave_lin_splits.shape)
     wave_split = np.array_split(np.array(wave), leng / (sr * time_part))
     new_wave = None
     for wave_part_i, wave_part in enumerate(wave_split):
-        beg = perf_counter()
         frec = 20_002
         for hash in hashes:
             for car in hash:
@@ -215,16 +235,13 @@ def encode_parts(wave, sr, hashes, file_name, time_part, show_plot=False, do_wri
             frec += 18
 
         wave_part = np.array(wave_part) / (32767 + amp * 64) * 32767
-        end = perf_counter()
-        print(normal_round((end - beg) / time_part, 2))
 
         if type(new_wave) == type(None):
             new_wave = wave_part
         else:
             new_wave = np.vstack((new_wave, wave_part))
-
+    '''
     new_wave = pd.DataFrame(new_wave)
-    decode(wave = new_wave, sr= sr)
 
     if show_plot:
         yf = fft(np.array(new_wave[0]))
@@ -234,11 +251,10 @@ def encode_parts(wave, sr, hashes, file_name, time_part, show_plot=False, do_wri
         plt.show()
     if do_write:
         write(f"{file_name}_encoded.flac", sr, wave, 320)
-    return wave
-
-
-encode_parts(x, sr, hashes,FILE_NAME, 60, do_write=True)
-
+    '''
+    return new_wave
+#wave_x = clean_high_frecs(x)
+#encode_parts(np.array(wave_x), sr, hashes,FILE_NAME, 1, do_write=True)
 
 def encode_2(wave, sr, br, hashes, file_name, show_plot=False, do_write=True):
     frec = 20_002
@@ -322,11 +338,6 @@ def encode_2(wave, sr, br, hashes, file_name, show_plot=False, do_write=True):
         write(f"{file_name}_encoded.flac", sr, wave, 320)
 
     return wave
-
-
-
-
-
 def real_time_decode_test(file_name, test, wave=None, show_plot=False):
     sr, br, x = read(file_name, 'flac')
     x = np.array(x)
@@ -364,15 +375,11 @@ def real_time_decode_test(file_name, test, wave=None, show_plot=False):
         if dec_hashes == test:
             return True, normal_round(leng / sr, 2)
     return False, np.nan
-
-
 '''
 enc_wave = encode(x, sr, br, hashes, FILE_NAME)
 decode(f"{FILE_NAME}_encoded.wav", enc_wave)
 print(hashes)
 '''
-
-
 def test():
     if not os.path.exists('E:\Encoded Songs\Songs_test_results.csv'):
         results = pd.DataFrame([],
